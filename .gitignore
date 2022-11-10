@@ -1,0 +1,7 @@
+captions
+train2014
+val2014
+*.h5
+
+.venv
+.vscode

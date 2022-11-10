@@ -1,0 +1,13 @@
+ipykernel
+h5py
+numpy
+pandas
+matplotlib
+pillow
+transformers
+torch
+torchvision
+ftfy
+open_clip_torch
+git+https://github.com/openai/CLIP.git
+pytorch-lightning
