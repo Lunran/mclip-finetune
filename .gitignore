@@ -5,3 +5,5 @@ val2014
 
 .venv
 .vscode
+lightning_logs
+.DS_Store
