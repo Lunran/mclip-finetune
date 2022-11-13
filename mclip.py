@@ -1,3 +1,5 @@
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import transformers
@@ -5,11 +7,23 @@ import torch
 import pytorch_lightning as pl
 from pytorch_memlab import profile, MemReporter
 from pytorch_lightning.loggers import WandbLogger
+import wandb
+import hydra
+from omegaconf import DictConfig
 
 
 TEXT_MODEL_NAME = 'M-CLIP/XLM-Roberta-Large-Vit-B-16Plus'
 # TEXT_MODEL_NAME = 'M-CLIP/LABSE-Vit-L-14'
 Ks = [1, 5, 10]
+
+
+def seed_everything(seed=1234):
+    # random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
 
 
 def compare_embeddings(text_embs, image_embs, logit_scale, softmax=False):
@@ -140,16 +154,17 @@ class MultilingualCLIP(transformers.PreTrainedModel):
 
 class MClipModelModule(pl.LightningModule):
 
-    def __init__(self, logit_scale):
+    def __init__(self, cfg, logit_scale):
         super().__init__()
+        self.cfg = cfg
+        self.logit_scale = logit_scale
 
         self.text_model = MultilingualCLIP.from_pretrained(TEXT_MODEL_NAME)
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(TEXT_MODEL_NAME)
-
         self.criterion1 = torch.nn.CrossEntropyLoss().to(self.device)
         self.criterion2 = torch.nn.CrossEntropyLoss().to(self.device)
 
-        self.logit_scale = logit_scale
+        self.save_hyperparameters()
 
     def training_step(self, batch, batch_idx):
         loss, _, _ = self.calc_loss(batch)
@@ -158,6 +173,9 @@ class MClipModelModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        if self.global_step == 0: 
+            wandb.define_metric('validation rSum', summary='max')
+
         loss, text_embs, image_embs = self.calc_loss(batch)
         self.log('validation_loss', loss)
 
@@ -180,20 +198,42 @@ class MClipModelModule(pl.LightningModule):
         return loss, text_embs, image_embs
     
     def configure_optimizers(self):
-        lr = 5e-7   # originaly 5e-5
-        optimizer = torch.optim.Adam(self.text_model.parameters(), lr=lr, betas=(0.9,0.98), eps=1e-6, weight_decay=0.2)
+        optimizer = torch.optim.Adam(
+            self.text_model.parameters(),
+            lr=self.cfg.optimizer.lr,
+            betas=self.cfg.optimizer.betas,
+            eps=self.cfg.optimizer.eps,
+            weight_decay=self.cfg.optimizer.weight_decay
+        )
 
         return optimizer
 
 
-if __name__ == '__main__':
+@hydra.main(config_path=".", config_name="config")
+def main(cfg : DictConfig) -> None:
+    print("Working directory : {}".format(os.getcwd()))
+
     import coco2014
 
+    seed_everything()
+
+    logger = WandbLogger(project='mclip_wandb', name='3', log_model=True)
+
     data = coco2014.DataModule(batch_size=16)
-    model = MClipModelModule(data.logit_scale)
+    logger.experiment.config.update({
+        'train_size': len(data.train_dataset),
+        'validation_size': len(data.val_dataset),
+    })
+
+    model = MClipModelModule(cfg, data.logit_scale)
+    logger.watch(model)
     # reporter = MemReporter(model)
     # reporter.report()
-    trainer = pl.Trainer(max_epochs=5, accelerator='gpu', devices=1, logger=WandbLogger())
-    # trainer = pl.Trainer(max_epochs=5, logger=WandbLogger())
+
+    trainer = pl.Trainer(max_epochs=5, accelerator='gpu', devices=1, logger=logger)
     trainer.fit(model, data)
     # reporter.report()
+
+
+if __name__ == '__main__':
+    main()

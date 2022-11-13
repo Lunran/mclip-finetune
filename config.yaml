@@ -1,0 +1,9 @@
+hydra:
+  run:
+    dir: ./
+  output_subdir: null
+optimizer:
+  lr: 5e-7   # originaly 5e-5
+  betas: [0.9, 0.98]   # tupple not supported
+  eps: 1e-6
+  weight_decay: 0.2

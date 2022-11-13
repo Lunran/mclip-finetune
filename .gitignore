@@ -1,12 +1,15 @@
-captions
 coco2014_train
 coco2014_val
 *.h5
 *.zip
 
+wandb
+mclip_wandb
+.hydra
+outputs
+mclip.log
+
+__pycache__
 .venv
 .vscode
-lightning_logs
-wandb
 .DS_Store
-__pycache__
