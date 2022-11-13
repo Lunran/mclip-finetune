@@ -1,64 +1,99 @@
-import glob
 import os
 import json
 
 import h5py
 import pandas as pd
-import numpy as np
 from PIL import Image
+import open_clip
+import torch
 from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as pl
 
 
-HDF5_PATH = 'coco2014.h5'
-CAPTIONS_DIR = 'captions'
-CAPTIONS_TRAIN_EN = 'captions_train2014.json'
-CAPTIONS_VAL_EN = 'captions_val2014.json'
-CAPTIONS_TRAIN_JP = 'stair_captions_v1.2_train.json'
-CAPTIONS_VAL_JP = 'stair_captions_v1.2_val.json'
-IMAGES_TRAIN_DIR = 'train2014'
-IMAGES_VAL_DIR = 'val2014'
+TRAIN_PATH = 'coco2014_train'
+VAL_PATH = 'coco2014_val'
+CAPTION_DIR_NAME = 'captions'
+CAPTION_FILE_NAME = 'jp.json'
+IMAGE_DIR_NAME = 'images'
+LOGIT_SCALE_NAME = 'logit_scale'
+
+IMAGE_MODEL_NAME, IMAGE_PRETRAINED_NAME = 'ViT-B-16-plus-240', 'laion400m_e32'
+# IMAGE_MODEL_NAME, IMAGE_PRETRAINED_NAME = 'ViT-L-14', 'laion400m_e32'
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+CREATE_BATCH_SIZE = 800
 
 
-def create_hdf5(hdf5_path):
-    with h5py.File(hdf5_path, 'w') as h5:
-        captions_group = h5.create_group(CAPTIONS_DIR)
+class DataCreator():
 
-        with open(CAPTIONS_DIR + '/' + CAPTIONS_VAL_EN, 'r') as val_en:
-            readme_dataset = captions_group.create_dataset(
-                name=CAPTIONS_VAL_EN, shape=(1,), dtype=h5py.string_dtype()
-            )
-            readme_dataset[0] = val_en.read()
+    def __init__(self, train, sample_size=None):
+        self.dir_path = TRAIN_PATH if train else VAL_PATH
 
-        images_group = h5.create_group(IMAGES_VAL_DIR)
-
-        count = 0
-        for p in sorted(glob.glob(IMAGES_VAL_DIR + '/*.jpg')):
-            image = np.array(Image.open(p)).astype(np.uint8)
-            image_dataset = images_group.create_dataset(
-                name=os.path.basename(p), data=image, compression='gzip'
-            )
-            count += 1
-            if count%1000 == 0:
-                print(count)
-
-
-class HDF5dataset(Dataset):
-
-    def __init__(self, sample_size):
-        self.h5 = h5py.File(HDF5_PATH, 'r')
-
-        captions_str = self.h5[CAPTIONS_DIR + '/' + CAPTIONS_VAL_EN][0]
-        captions_dict = json.loads(captions_str)['annotations']
+        file_path = self.dir_path + '/' + CAPTION_DIR_NAME + '/' + CAPTION_FILE_NAME
+        with open(file_path, 'r') as f:
+            captions_dict = json.loads(f.read())['annotations']
         df = pd.DataFrame(captions_dict)[['image_id', 'caption']]
         df['caption_concat'] = df.groupby(['image_id'])['caption']\
             .transform(lambda x: ' '.join(x))
         df = df[['image_id','caption_concat']].drop_duplicates().reset_index()
-        df['image_file'] = df['image_id'].apply('COCO_val2014_{:012}.jpg'.format)
+        image_prefix = 'COCO_train2014_' if train else 'COCO_val2014_'
+        df['image_file'] = df['image_id'].apply((image_prefix + '{:012}.jpg').format)
         self.df = df[['image_file', 'caption_concat']]
 
-        if sample_size < len(df):
+        if sample_size is not None and sample_size < len(self.df):
             self.df = self.df[:sample_size]
+
+    def create_hdf5(self):
+        clip_model, _, preprocess = \
+            open_clip.create_model_and_transforms(
+                model_name=IMAGE_MODEL_NAME,
+                pretrained=IMAGE_PRETRAINED_NAME,
+                device=DEVICE
+            )
+        for _, param in clip_model.named_parameters():
+            param.requires_grad = False
+        image_model = clip_model.visual
+        logit_scale = clip_model.logit_scale.exp()
+
+        with h5py.File(self.dir_path + '.h5', 'w') as h5:
+            captions_group = h5.create_group(CAPTION_DIR_NAME)
+            captions_group.create_dataset(name=CAPTION_FILE_NAME, data=self.df.values)
+
+            images_group = h5.create_group(IMAGE_DIR_NAME)
+            images_group.create_dataset(name=LOGIT_SCALE_NAME, data=logit_scale.cpu())
+            pil_images, paths = [], []
+            for idx in range(len(self.df)):
+                file_path = self.dir_path + '/' + IMAGE_DIR_NAME + '/' + self.df.at[idx, "image_file"]
+                pil_images.append(preprocess(Image.open(file_path)))
+                paths.append(file_path)
+                if len(pil_images) >= CREATE_BATCH_SIZE:
+                    self.create_dataset(images_group, pil_images, paths, image_model)
+                    pil_images, paths = [], []
+                    print("processed!")
+            if len(pil_images) != 0:
+                self.create_dataset(images_group, pil_images, paths, image_model)
+
+    def create_dataset(self, images_group, pil_images, paths, image_model):
+        tensor_images = torch.stack(pil_images).to(DEVICE)
+        with torch.no_grad():
+            image_embs = image_model(tensor_images)
+        for i in range(image_embs.shape[0]):
+            name = os.path.basename(paths[i])
+            image_emb = image_embs[i].cpu()
+            images_group.create_dataset(name=name, data=image_emb)
+
+
+class HDF5dataset(Dataset):
+
+    def __init__(self, hdf5_path):
+        self.h5 = h5py.File(hdf5_path, 'r')
+
+        numpy_array = self.h5[CAPTION_DIR_NAME + '/' + CAPTION_FILE_NAME]
+        self.df = pd.DataFrame(numpy_array)
+        self.df.columns = ['image_file', 'caption_concat']
+        for col in self.df:
+            self.df[col] = self.df[col].str.decode('utf-8')
+
+        self.logit_scale = self.h5[IMAGE_DIR_NAME + '/' + LOGIT_SCALE_NAME][()]
 
     def __len__(self):
 
@@ -66,42 +101,40 @@ class HDF5dataset(Dataset):
 
     def __getitem__(self, idx):
         file_name = self.df.at[idx, "image_file"]
-        numpy_image = self.h5[IMAGES_VAL_DIR + '/' + file_name][()]   # or [:, :, :]
-        pil_image = Image.fromarray(numpy_image).resize((224, 224))
-        numpy_image = np.array(pil_image).transpose(2, 0, 1)
-
+        image_emb = self.h5[IMAGE_DIR_NAME + '/' + file_name][()]
         caption = self.df.at[idx, "caption_concat"]
 
-        return numpy_image, caption
+        return image_emb, caption
 
 
 class DataModule(pl.LightningDataModule):
 
-    def __init__(self, sample_size, batch_size):
+    def __init__(self, batch_size):
         super().__init__()
-        self.sample_size = sample_size
+        self.train_dataset = HDF5dataset(TRAIN_PATH + '.h5')
+        self.val_dataset = HDF5dataset(VAL_PATH + '.h5')
+        self.logit_scale = self.train_dataset.logit_scale
         self.batch_size = batch_size
 
-    def setup(self, stage):
-        self.dataset = HDF5dataset(self.sample_size)
-
     def train_dataloader(self):
-        return DataLoader(self.dataset,
+        return DataLoader(self.train_dataset,
                           batch_size=self.batch_size,
                           shuffle=False,
                           num_workers=0)   # hdf5 allows 0 only!
 
     def val_dataloader(self):
-        return DataLoader(self.dataset,
+        return DataLoader(self.val_dataset,
                           batch_size=self.batch_size,
-                          shuffle=True,
+                          shuffle=False,
                           num_workers=0)   # hdf5 allows 0 only!
 
 
 if __name__ == '__main__':
-    #create_hdf5(HDF5_PATH)
-    datamodule = DataModule(100, 16)
-    datamodule.setup('fit')
+    # DataCreator(train=True, sample_size=16*50).create_hdf5()
+    # DataCreator(train=False, sample_size=16*50).create_hdf5()
+
+    datamodule = DataModule(batch_size=16)
+    print(datamodule.logit_scale[()])
     dataloader = datamodule.train_dataloader()
-    sample = next(iter(dataloader))
-    print(sample[0].shape, len(sample[1]))
+    image_embs, caption_batch = next(iter(dataloader))
+    print(image_embs.shape, len(caption_batch))

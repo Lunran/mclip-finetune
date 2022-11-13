@@ -1,9 +1,12 @@
 captions
-train2014
-val2014
+coco2014_train
+coco2014_val
 *.h5
+*.zip
 
 .venv
 .vscode
 lightning_logs
+wandb
 .DS_Store
+__pycache__

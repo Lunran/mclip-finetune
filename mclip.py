@@ -2,54 +2,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import transformers
 import torch
-import torchvision
 import pytorch_lightning as pl
-import open_clip
 from pytorch_memlab import profile, MemReporter
+from pytorch_lightning.loggers import WandbLogger
 
 
-# TEXT_MODEL_NAME = 'M-CLIP/LABSE-Vit-L-14'
-# IMAGE_MODEL_NAME, IMAGE_PRETRAINED_NAME = 'ViT-L-14', 'laion400m_e32'
 TEXT_MODEL_NAME = 'M-CLIP/XLM-Roberta-Large-Vit-B-16Plus'
-IMAGE_MODEL_NAME, IMAGE_PRETRAINED_NAME = 'ViT-B-16-plus-240', 'laion400m_e32'
+# TEXT_MODEL_NAME = 'M-CLIP/LABSE-Vit-L-14'
 Ks = [1, 5, 10]
-
-
-class MCLIPConfig(transformers.PretrainedConfig):
-    model_type = "M-CLIP"
-
-    def __init__(self, modelBase='xlm-roberta-large', transformerDimSize=1024, imageDimSize=768, **kwargs):
-        self.transformerDimensions = transformerDimSize
-        self.numDims = imageDimSize
-        self.modelBase = modelBase
-        super().__init__(**kwargs)
-
-
-class MultilingualCLIP(transformers.PreTrainedModel):
-    config_class = MCLIPConfig
-
-    def __init__(self, config, *args, **kwargs):
-        super().__init__(config, *args, **kwargs)
-        self.transformer = transformers.AutoModel.from_pretrained(
-            config.modelBase,
-            cache_dir=kwargs.get("cache_dir")
-        )
-        self.LinearTransformation = torch.nn.Linear(
-            in_features=config.transformerDimensions,
-            out_features=config.numDims
-        )
-
-    def forward(self, txt, tokenizer, device):
-        txt_tok = tokenizer(txt, padding=True, return_tensors='pt').to(device)
-        embs = self.transformer(**txt_tok)[0]
-        att = txt_tok['attention_mask']
-        embs = (embs * att.unsqueeze(2)).sum(dim=1) / att.sum(dim=1)[:, None]
-        return self.LinearTransformation(embs)
-
-    @classmethod
-    def _load_state_dict_into_model(cls, model, state_dict, pretrained_model_name_or_path, _fast_init=True):
-        model.load_state_dict(state_dict)
-        return model, [], [], []
 
 
 def compare_embeddings(text_embs, image_embs, logit_scale, softmax=False):
@@ -141,56 +101,75 @@ def evaluate(text_embs, image_embs, logit_scale):
     return recalls
 
 
+class MCLIPConfig(transformers.PretrainedConfig):
+    model_type = "M-CLIP"
+
+    def __init__(self, modelBase='xlm-roberta-large', transformerDimSize=1024, imageDimSize=768, **kwargs):
+        self.transformerDimensions = transformerDimSize
+        self.numDims = imageDimSize
+        self.modelBase = modelBase
+        super().__init__(**kwargs)
+
+
+class MultilingualCLIP(transformers.PreTrainedModel):
+    config_class = MCLIPConfig
+
+    def __init__(self, config, *args, **kwargs):
+        super().__init__(config, *args, **kwargs)
+        self.transformer = transformers.AutoModel.from_pretrained(
+            config.modelBase,
+            cache_dir=kwargs.get("cache_dir")
+        )
+        self.LinearTransformation = torch.nn.Linear(
+            in_features=config.transformerDimensions,
+            out_features=config.numDims
+        )
+
+    def forward(self, txt, tokenizer, device):
+        txt_tok = tokenizer(txt, padding=True, return_tensors='pt').to(device)
+        embs = self.transformer(**txt_tok)[0]
+        att = txt_tok['attention_mask']
+        embs = (embs * att.unsqueeze(2)).sum(dim=1) / att.sum(dim=1)[:, None]
+        return self.LinearTransformation(embs)
+
+    @classmethod
+    def _load_state_dict_into_model(cls, model, state_dict, pretrained_model_name_or_path, _fast_init=True):
+        model.load_state_dict(state_dict)
+        return model, [], [], []
+
+
 class MClipModelModule(pl.LightningModule):
 
-    def __init__(self):
+    def __init__(self, logit_scale):
         super().__init__()
 
         self.text_model = MultilingualCLIP.from_pretrained(TEXT_MODEL_NAME)
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(TEXT_MODEL_NAME)
 
-        clip_model, _, self.preprocess = \
-            open_clip.create_model_and_transforms(
-                model_name=IMAGE_MODEL_NAME,
-                pretrained=IMAGE_PRETRAINED_NAME,
-                device=self.device
-            )
-        for name, param in clip_model.named_parameters():
-            param.requires_grad = False
-        self.image_model = clip_model.visual
-        self.logit_scale = clip_model.logit_scale.exp()
-
         self.criterion1 = torch.nn.CrossEntropyLoss().to(self.device)
         self.criterion2 = torch.nn.CrossEntropyLoss().to(self.device)
 
+        self.logit_scale = logit_scale
+
     def training_step(self, batch, batch_idx):
-        image_batch, caption_batch = batch
-        loss, _, _ = self.calc_loss(image_batch, caption_batch)
-        # self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        loss, _, _ = self.calc_loss(batch)
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
         return loss
 
-    # def validation_step(self, batch, batch_idx):
-    #     image_batch, caption_batch = batch
-    #     loss, text_embs, image_embs = self.calc_loss(image_batch, caption_batch)
-    #     self.log('validation_loss')
+    def validation_step(self, batch, batch_idx):
+        loss, text_embs, image_embs = self.calc_loss(batch)
+        self.log('validation_loss', loss)
 
-    #     logits = compare_embeddings(text_embs, image_embs, self.logit_scale)
-    #     recalls = get_rSum(logits, Ks)
-    #     self.log('validation rSum', recalls['rSum'])
+        logits = compare_embeddings(text_embs, image_embs, self.logit_scale)
+        recalls = get_rSum(logits, Ks)
+        self.log('validation rSum', recalls['rSum'])
 
-    #     return loss
+        return loss
 
-    def calc_loss(self, image_batch, caption_batch):
+    def calc_loss(self, batch):
+        image_embs, caption_batch = batch
         text_embs = self.text_model(caption_batch, self.tokenizer, self.device)
-        with torch.no_grad():
-            pil_images = []
-            for tensor_image in image_batch:
-                pil_image = torchvision.transforms.functional.to_pil_image(tensor_image)
-                pil_images.append(self.preprocess(pil_image))
-            tensor_images = torch.stack(pil_images).to(self.device).detach()
-            image_embs = self.image_model(tensor_images).detach()
-
         logits_1 = compare_embeddings_2(image_embs, text_embs, self.logit_scale)
         logits_2 = compare_embeddings_2(text_embs, image_embs, self.logit_scale)
         label = torch.arange(len(image_embs)).to(self.device)
@@ -210,10 +189,11 @@ class MClipModelModule(pl.LightningModule):
 if __name__ == '__main__':
     import coco2014
 
-    data = coco2014.DataModule(16, 16)
-    model = MClipModelModule()
-    reporter = MemReporter(model)
-    reporter.report()
-    trainer = pl.Trainer(max_epochs=20)
+    data = coco2014.DataModule(batch_size=16)
+    model = MClipModelModule(data.logit_scale)
+    # reporter = MemReporter(model)
+    # reporter.report()
+    trainer = pl.Trainer(max_epochs=5, accelerator='gpu', devices=1, logger=WandbLogger())
+    # trainer = pl.Trainer(max_epochs=5, logger=WandbLogger())
     trainer.fit(model, data)
-    reporter.report()
+    # reporter.report()
