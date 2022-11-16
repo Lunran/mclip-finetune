@@ -1,6 +1,5 @@
 import os
 
-import matplotlib.pyplot as plt
 import numpy as np
 import transformers
 import torch
@@ -12,12 +11,7 @@ import hydra
 from omegaconf import DictConfig
 
 
-TEXT_MODEL_NAME = 'M-CLIP/XLM-Roberta-Large-Vit-B-16Plus'
-# TEXT_MODEL_NAME = 'M-CLIP/LABSE-Vit-L-14'
-Ks = [1, 5, 10]
-
-
-def seed_everything(seed=1234):
+def seed_everything(seed):
     # random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
@@ -79,42 +73,6 @@ def get_rSum(logits, Ks):
     return recalls
 
 
-def plot_heatmap(result_matrix, xlabel, ylabel):
-    height, width = result_matrix.shape
-    fig, ax = plt.subplots()
-    fig.set_size_inches(8, 8)
-    im = ax.imshow(result_matrix)
-
-    ax.set_xticks(np.arange(width))
-    ax.set_yticks(np.arange(height))
-    ax.set_xticklabels(["{}".format(i) for i in range(width)])
-    ax.set_yticklabels(["{}".format(i) for i in range(height)])
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-
-    for i in range(height):
-        for j in range(width):
-            text = ax.text(j, i, f"{result_matrix[i, j]:.0f}",
-                           ha="center", va="center", color='grey', size=20)
-
-    fig.tight_layout()
-    plt.show()
-
-
-def evaluate(text_embs, image_embs, logit_scale):
-    logits = compare_embeddings(text_embs, image_embs, logit_scale)
-    recalls = get_rSum(logits, Ks)
-
-    if len(text_embs) <= 20:
-        fig = plt.figure()
-        fig.set_size_inches(30,5)
-        probs = compare_embeddings(text_embs, image_embs, logit_scale, softmax=True)
-        plot_heatmap(probs['image-to-text'], xlabel='Image', ylabel='Text')
-        plot_heatmap(probs['text-to-image'], xlabel='Text', ylabel='Image')
-        
-    return recalls
-
-
 class MCLIPConfig(transformers.PretrainedConfig):
     model_type = "M-CLIP"
 
@@ -159,8 +117,10 @@ class MClipModelModule(pl.LightningModule):
         self.cfg = cfg
         self.logit_scale = logit_scale
 
-        self.text_model = MultilingualCLIP.from_pretrained(TEXT_MODEL_NAME)
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(TEXT_MODEL_NAME)
+        self.text_model = \
+            MultilingualCLIP.from_pretrained(cfg.model.text_model_name)
+        self.tokenizer = \
+            transformers.AutoTokenizer.from_pretrained(cfg.model.text_model_name)
         self.criterion1 = torch.nn.CrossEntropyLoss().to(self.device)
         self.criterion2 = torch.nn.CrossEntropyLoss().to(self.device)
 
@@ -180,7 +140,7 @@ class MClipModelModule(pl.LightningModule):
         self.log('validation_loss', loss)
 
         logits = compare_embeddings(text_embs, image_embs, self.logit_scale)
-        recalls = get_rSum(logits, Ks)
+        recalls = get_rSum(logits, self.cfg.eval.Ks)
         self.log('validation rSum', recalls['rSum'])
 
         return loss
@@ -211,15 +171,15 @@ class MClipModelModule(pl.LightningModule):
 
 @hydra.main(config_path=".", config_name="config")
 def main(cfg : DictConfig) -> None:
-    print("Working directory : {}".format(os.getcwd()))
-
     import coco2014
 
-    seed_everything()
+    seed_everything(cfg.run.seed)
 
-    logger = WandbLogger(project='mclip_wandb', name='3', log_model=True)
+    logger = WandbLogger(project=cfg.wandb.project,
+                         name=cfg.wandb.name,
+                         log_model=True)
 
-    data = coco2014.DataModule(batch_size=16)
+    data = coco2014.DataModule(batch_size=cfg.train.batch_size)
     logger.experiment.config.update({
         'train_size': len(data.train_dataset),
         'validation_size': len(data.val_dataset),
@@ -230,7 +190,10 @@ def main(cfg : DictConfig) -> None:
     # reporter = MemReporter(model)
     # reporter.report()
 
-    trainer = pl.Trainer(max_epochs=5, accelerator='gpu', devices=1, logger=logger)
+    trainer = pl.Trainer(max_epochs=cfg.train.max_epochs,
+                         accelerator=cfg.train.accelerator,
+                         devices=cfg.train.devices,
+                         logger=logger)
     trainer.fit(model, data)
     # reporter.report()
 

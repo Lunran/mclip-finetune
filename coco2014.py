@@ -132,6 +132,8 @@ class DataModule(pl.LightningDataModule):
 if __name__ == '__main__':
     # DataCreator(train=True, sample_size=16*100).create_hdf5()
     # DataCreator(train=False, sample_size=16*100).create_hdf5()
+    # DataCreator(train=True).create_hdf5()
+    # DataCreator(train=False).create_hdf5()
 
     datamodule = DataModule(batch_size=16)
     print(datamodule.logit_scale[()])
