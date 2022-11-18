@@ -1,5 +1,6 @@
 import os
 import json
+import pathlib
 
 import h5py
 import pandas as pd
@@ -8,10 +9,14 @@ import open_clip
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as pl
+import hydra
+from omegaconf import DictConfig
 
 
-TRAIN_PATH = 'coco2014_train'
-VAL_PATH = 'coco2014_val'
+ORG_DATA = pathlib.Path('org_data')
+PREPROCESSED_DATA = pathlib.Path('preprocessed_data')
+TRAIN_PREFIX = 'coco2014_train'
+VAL_PREFIX = 'coco2014_val'
 CAPTION_DIR_NAME = 'captions'
 CAPTION_FILE_NAME = 'jp.json'
 IMAGE_DIR_NAME = 'images'
@@ -25,11 +30,11 @@ CREATE_BATCH_SIZE = 800
 
 class DataCreator():
 
-    def __init__(self, train, sample_size=None):
-        self.dir_path = TRAIN_PATH if train else VAL_PATH
+    def __init__(self, sample_size, train):
+        self.prefix = TRAIN_PREFIX if train else VAL_PREFIX
 
-        file_path = self.dir_path + '/' + CAPTION_DIR_NAME + '/' + CAPTION_FILE_NAME
-        with open(file_path, 'r') as f:
+        caption_path = ORG_DATA / self.prefix / CAPTION_DIR_NAME / CAPTION_FILE_NAME
+        with caption_path.open('r') as f:
             captions_dict = json.loads(f.read())['annotations']
         df = pd.DataFrame(captions_dict)[['image_id', 'caption']]
         df['caption_concat'] = df.groupby(['image_id'])['caption']\
@@ -39,10 +44,10 @@ class DataCreator():
         df['image_file'] = df['image_id'].apply((image_prefix + '{:012}.jpg').format)
         self.df = df[['image_file', 'caption_concat']]
 
-        if sample_size is not None and sample_size < len(self.df):
-            self.df = self.df[:sample_size]
+        if sample_size != 'full' and eval(sample_size) < len(self.df):
+            self.df = self.df[:eval(sample_size)]
 
-    def create_hdf5(self):
+    def create_hdf5(self, suffix):
         clip_model, _, preprocess = \
             open_clip.create_model_and_transforms(
                 model_name=IMAGE_MODEL_NAME,
@@ -54,7 +59,8 @@ class DataCreator():
         image_model = clip_model.visual
         logit_scale = clip_model.logit_scale.exp()
 
-        with h5py.File(self.dir_path + '.h5', 'w') as h5:
+        h5_path = PREPROCESSED_DATA / (self.prefix + '_' + suffix + '.h5')
+        with h5py.File(h5_path, 'w') as h5:
             captions_group = h5.create_group(CAPTION_DIR_NAME)
             captions_group.create_dataset(name=CAPTION_FILE_NAME, data=self.df.values)
 
@@ -62,9 +68,10 @@ class DataCreator():
             images_group.create_dataset(name=LOGIT_SCALE_NAME, data=logit_scale.cpu())
             pil_images, paths = [], []
             for idx in range(len(self.df)):
-                file_path = self.dir_path + '/' + IMAGE_DIR_NAME + '/' + self.df.at[idx, "image_file"]
-                pil_images.append(preprocess(Image.open(file_path)))
-                paths.append(file_path)
+                image_path = ORG_DATA / self.prefix / IMAGE_DIR_NAME\
+                                      / self.df.at[idx, "image_file"]
+                pil_images.append(preprocess(Image.open(image_path)))
+                paths.append(image_path)
                 if len(pil_images) >= CREATE_BATCH_SIZE:
                     self.create_dataset(images_group, pil_images, paths, image_model)
                     pil_images, paths = [], []
@@ -111,8 +118,11 @@ class DataModule(pl.LightningDataModule):
 
     def __init__(self, cfg):
         super().__init__()
-        self.train_dataset = HDF5dataset(TRAIN_PATH + '.h5')
-        self.val_dataset = HDF5dataset(VAL_PATH + '.h5')
+        suffix = cfg.preprocess.sample_size
+        h5_path = PREPROCESSED_DATA / (TRAIN_PREFIX + '_' + suffix + '.h5')
+        self.train_dataset = HDF5dataset(h5_path)
+        h5_path = PREPROCESSED_DATA / (VAL_PREFIX + '_' + suffix + '.h5')
+        self.val_dataset = HDF5dataset(h5_path)
         self.logit_scale = self.train_dataset.logit_scale
         self.batch_size = cfg.train.batch_size
 
@@ -129,9 +139,14 @@ class DataModule(pl.LightningDataModule):
                           num_workers=0)   # hdf5 allows 0 only!
 
 
-if __name__ == '__main__':
-    datamodule = DataModule(batch_size=16)
+@hydra.main(config_path="..", config_name="config")
+def main(cfg : DictConfig) -> None:
+    datamodule = DataModule(cfg)
     print(datamodule.logit_scale[()])
     dataloader = datamodule.train_dataloader()
     image_embs, caption_batch = next(iter(dataloader))
     print(image_embs.shape, len(caption_batch))
+
+
+if __name__ == '__main__':
+    main()

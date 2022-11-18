@@ -1,17 +1,18 @@
 import os
 
 import numpy as np
-import transformers
 import torch
 import pytorch_lightning as pl
 from pytorch_memlab import profile, MemReporter
 from pytorch_lightning.loggers import WandbLogger
-import wandb
 import hydra
 from omegaconf import DictConfig
 
-import mclip
-import coco2014
+from src.mclip import MClipModelModule
+from src.coco2014 import (
+    PREPROCESSED_DATA, TRAIN_PREFIX,
+    DataCreator, DataModule
+)
 
 
 def seed_everything(seed):
@@ -25,25 +26,25 @@ def seed_everything(seed):
 
 @hydra.main(config_path=".", config_name="config")
 def main(cfg : DictConfig) -> None:
-    import coco2014
-
     seed_everything(cfg.run.seed)
 
     logger = WandbLogger(project=cfg.wandb.project,
                          name=cfg.wandb.name,
                          log_model=True)
 
-    if cfg.preprocess.h5_create:
-        size = cfg.preprocess.sample_size
-        coco2014.DataCreator(train=True, sample_size=size).create_hdf5()
-        coco2014.DataCreator(train=False, sample_size=size).create_hdf5()
-    data = coco2014.DataModule(cfg)
+    size = suffix = cfg.preprocess.sample_size
+    h5_path = PREPROCESSED_DATA / (TRAIN_PREFIX + '_' + suffix + '.h5')
+    if not h5_path.is_file():
+        DataCreator(size, train=True).create_hdf5(suffix)
+        DataCreator(size, train=False).create_hdf5(suffix)
+
+    data = DataModule(cfg)
     logger.experiment.config.update({
         'train_size': len(data.train_dataset),
         'validation_size': len(data.val_dataset),
     })
 
-    model = mclip.MClipModelModule(cfg, data.logit_scale)
+    model = MClipModelModule(cfg, data.logit_scale)
     logger.watch(model)
     # reporter = MemReporter(model)
     # reporter.report()
