@@ -3,11 +3,10 @@ coco2014_val
 *.h5
 *.zip
 
-wandb
-mclip_wandb
+wandb*
 .hydra
 outputs
-mclip.log
+*.log
 
 __pycache__
 .venv

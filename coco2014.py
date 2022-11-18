@@ -109,12 +109,12 @@ class HDF5dataset(Dataset):
 
 class DataModule(pl.LightningDataModule):
 
-    def __init__(self, batch_size):
+    def __init__(self, cfg):
         super().__init__()
         self.train_dataset = HDF5dataset(TRAIN_PATH + '.h5')
         self.val_dataset = HDF5dataset(VAL_PATH + '.h5')
         self.logit_scale = self.train_dataset.logit_scale
-        self.batch_size = batch_size
+        self.batch_size = cfg.train.batch_size
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
@@ -130,11 +130,6 @@ class DataModule(pl.LightningDataModule):
 
 
 if __name__ == '__main__':
-    # DataCreator(train=True, sample_size=16*100).create_hdf5()
-    # DataCreator(train=False, sample_size=16*100).create_hdf5()
-    # DataCreator(train=True).create_hdf5()
-    # DataCreator(train=False).create_hdf5()
-
     datamodule = DataModule(batch_size=16)
     print(datamodule.logit_scale[()])
     dataloader = datamodule.train_dataloader()

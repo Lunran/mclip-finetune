@@ -3,12 +3,16 @@ hydra:
     dir: ./
   output_subdir: null
 
-wandb:
-  project: mclip_wandb
-  name: "3"
-
 run:
   seed: 1234
+
+wandb:
+  project: wandb_mclip
+  name: "3"
+
+preprocess:
+  h5_create: False
+  sample_size: 16*1000
 
 model:
   text_model_name: M-CLIP/XLM-Roberta-Large-Vit-B-16Plus   # 'M-CLIP/LABSE-Vit-L-14'
