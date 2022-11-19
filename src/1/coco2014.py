@@ -139,7 +139,7 @@ class DataModule(pl.LightningDataModule):
                           num_workers=0)   # hdf5 allows 0 only!
 
 
-@hydra.main(config_path="..", config_name="config")
+@hydra.main(config_path=".", config_name="config", version_base="1.2")
 def main(cfg : DictConfig) -> None:
     datamodule = DataModule(cfg)
     print(datamodule.logit_scale[()])

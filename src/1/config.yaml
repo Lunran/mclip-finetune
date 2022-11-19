@@ -5,10 +5,8 @@ hydra:
 
 run:
   seed: 1234
-
-wandb:
   project: wandb_mclip
-  name: '3'
+  id: 0   # override this with command-line argument
 
 preprocess:
   sample_size: '16*10'   # 'full' or 'train.batch_size * N'

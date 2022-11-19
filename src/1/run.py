@@ -8,8 +8,8 @@ from pytorch_lightning.loggers import WandbLogger
 import hydra
 from omegaconf import DictConfig
 
-from src.mclip import MClipModelModule
-from src.coco2014 import (
+from mclip import MClipModelModule
+from coco2014 import (
     PREPROCESSED_DATA, TRAIN_PREFIX,
     DataCreator, DataModule
 )
@@ -24,12 +24,11 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = True
 
 
-@hydra.main(config_path=".", config_name="config")
+@hydra.main(config_path=".", config_name="config", version_base="1.2")
 def main(cfg : DictConfig) -> None:
     seed_everything(cfg.run.seed)
-
-    logger = WandbLogger(project=cfg.wandb.project,
-                         name=cfg.wandb.name,
+    logger = WandbLogger(project=cfg.run.project,
+                         name=str(cfg.run.id),
                          log_model=True)
 
     size = suffix = cfg.preprocess.sample_size
