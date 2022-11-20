@@ -27,9 +27,11 @@ def seed_everything(seed):
 @hydra.main(config_path=".", config_name="config", version_base="1.2")
 def main(cfg : DictConfig) -> None:
     seed_everything(cfg.run.seed)
-    logger = WandbLogger(project=cfg.run.project,
-                         name=str(cfg.run.id),
-                         log_model=True)
+    logger = WandbLogger(
+        project=cfg.run.project,
+        name=str(cfg.run.id),
+        log_model=cfg.run.log_model
+    )
 
     size = suffix = cfg.preprocess.sample_size
     h5_path = PREPROCESSED_DATA / (TRAIN_PREFIX + '_' + suffix + '.h5')
@@ -44,14 +46,27 @@ def main(cfg : DictConfig) -> None:
     })
 
     model = MClipModelModule(cfg, data.logit_scale)
-    logger.watch(model)
+    # logger.watch(model)
     # reporter = MemReporter(model)
     # reporter.report()
 
-    trainer = pl.Trainer(max_epochs=cfg.train.max_epochs,
-                         accelerator=cfg.train.accelerator,
-                         devices=cfg.train.devices,
-                         logger=logger)
+    earlystopping_callback = pl.callbacks.early_stopping.EarlyStopping(
+        monitor='validation rSum',
+        mode='max'
+    )
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        monitor='validation rSum',
+        mode='max',
+        dirpath='./checkpoint',
+        filename='mclip_{epoch:02d}_{validation rSum:.0f}'
+    )
+    trainer = pl.Trainer(
+        max_epochs=cfg.train.max_epochs,
+        accelerator=cfg.train.accelerator,
+        devices=cfg.train.devices,
+        callbacks=[earlystopping_callback, checkpoint_callback],
+        logger=logger
+    )
     trainer.fit(model, data)
     # reporter.report()
 

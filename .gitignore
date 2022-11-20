@@ -3,6 +3,7 @@ coco2014_val
 *.h5
 *.zip
 
+checkpoint
 wandb*
 .hydra
 outputs

@@ -7,6 +7,7 @@ run:
   seed: 1234
   project: wandb_mclip
   id: 0   # override this with command-line argument
+  log_model: False
 
 preprocess:
   sample_size: '16*10'   # 'full' or 'train.batch_size * N'
